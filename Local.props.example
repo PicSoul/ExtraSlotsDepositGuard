@@ -1,0 +1,27 @@
+<!--
+  Copy this file to Local.props and edit the paths for your machine.
+  Local.props is gitignored, so your paths stay out of the repository.
+
+  Both properties are optional. If you omit them the build falls back to the
+  VALHEIM_INSTALL / BEPINEX_CORE environment variables, then to the default
+  Steam install location.
+-->
+<Project>
+  <PropertyGroup>
+
+    <!-- Your Valheim folder: the one containing valheim.exe -->
+    <ValheimInstall>C:\Program Files (x86)\Steam\steamapps\common\Valheim</ValheimInstall>
+
+    <!--
+      The BepInEx\core folder holding BepInEx.dll and 0Harmony.dll.
+
+      Manual BepInEx install: leave this commented out, it is found automatically
+      inside the Valheim folder.
+
+      r2modman / Thunderstore Mod Manager: BepInEx lives in the profile instead,
+      so point at it explicitly, for example:
+    -->
+    <!-- <BepInExCore>$(AppData)\r2modmanPlus-local\Valheim\profiles\Default\BepInEx\core</BepInExCore> -->
+
+  </PropertyGroup>
+</Project>

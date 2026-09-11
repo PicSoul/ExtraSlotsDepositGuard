@@ -1,0 +1,11 @@
+{
+  "name": "ExtraSlotsDepositGuard",
+  "version_number": "1.0.0",
+  "website_url": "https://github.com/PicSoul/ExtraSlotsDepositGuard",
+  "description": "Stops Nearby Crafting's quick-deposit hotkey from emptying Extra Slots equipment, quick, food, ammo and misc slots.",
+  "dependencies": [
+    "denikson-BepInExPack_Valheim-5.4.2350",
+    "IPA38-NearbyCrafting-1.2.1",
+    "shudnal-ExtraSlots-1.2.3"
+  ]
+}

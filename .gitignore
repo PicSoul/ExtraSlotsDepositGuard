@@ -1,0 +1,19 @@
+# Machine-specific build paths
+Local.props
+
+# Build output
+bin/
+obj/
+package/
+*.zip
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
