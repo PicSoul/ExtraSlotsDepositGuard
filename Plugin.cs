@@ -16,7 +16,7 @@ namespace ExtraSlotsDepositGuard
     {
         public const string PluginGuid = "com.pics0ul.valheim.extraslotsdepositguard";
         public const string PluginName = "ExtraSlots Deposit Guard";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "1.0.1";
 
         internal const string NearbyCraftingGuid = "com.mikeg.valheim.nearbycrafting";
         internal const string ExtraSlotsGuid = "shudnal.ExtraSlots";

@@ -32,7 +32,23 @@ Write-Host "`nExtraSlotsDepositGuard $($manifest.version_number)" -ForegroundCol
 if ($csprojVersion -ne $manifest.version_number) {
     Fail "version mismatch: manifest.json says $($manifest.version_number), csproj says $csprojVersion"
 }
-Ok "version $($manifest.version_number) matches in manifest.json and csproj"
+
+# The BepInPlugin attribute needs a compile-time constant, so the version is
+# declared a third time in Plugin.cs. Catch it drifting.
+$pluginSource = Get-Content "$root\Plugin.cs" -Raw
+if ($pluginSource -notmatch 'PluginVersion\s*=\s*"([^"]+)"') { Fail "could not find PluginVersion in Plugin.cs" }
+$pluginVersion = $Matches[1]
+if ($pluginVersion -ne $manifest.version_number) {
+    Fail "version mismatch: manifest.json says $($manifest.version_number), Plugin.cs PluginVersion says $pluginVersion"
+}
+Ok "version $($manifest.version_number) matches in manifest.json, csproj and Plugin.cs"
+
+# The README quotes the startup log line, which embeds the version.
+$readme = Get-Content "$root\README.md" -Raw
+if ($readme -match 'Deposit Guard (\d+\.\d+\.\d+) loaded' -and $Matches[1] -ne $manifest.version_number) {
+    Fail "README.md quotes the startup log as version $($Matches[1]), but this is $($manifest.version_number)"
+}
+Ok "README startup-log example matches the version"
 
 # ---------------------------------------------------------------------- build
 Write-Host "`nbuilding..." -ForegroundColor Cyan

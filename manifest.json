@@ -1,6 +1,6 @@
 {
   "name": "ExtraSlotsDepositGuard",
-  "version_number": "1.0.0",
+  "version_number": "1.0.1",
   "website_url": "https://github.com/PicSoul/ExtraSlotsDepositGuard",
   "description": "Stops Nearby Crafting's quick-deposit hotkey from emptying Extra Slots equipment, quick, food, ammo and misc slots.",
   "dependencies": [

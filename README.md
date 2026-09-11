@@ -87,7 +87,7 @@ If a future update to either mod changes what this patch hooks into, it logs an 
 Set `DebugLogging = true` and check `BepInEx/LogOutput.log`. On a healthy startup you'll see:
 
 ```text
-[Info : ExtraSlots Deposit Guard] ExtraSlots Deposit Guard 1.0.0 loaded; protecting Extra Slots slots from quick-deposit.
+[Info : ExtraSlots Deposit Guard] ExtraSlots Deposit Guard 1.0.1 loaded; protecting Extra Slots slots from quick-deposit.
 ```
 
 With debug logging on, each held-back item is reported as it happens.
