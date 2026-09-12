@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using BepInEx;
+using BepInEx.Bootstrap;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
@@ -10,15 +11,17 @@ using HarmonyLib;
 namespace ExtraSlotsDepositGuard
 {
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
-    [BepInDependency(NearbyCraftingGuid, BepInDependency.DependencyFlags.HardDependency)]
+    [BepInDependency(NearbyCraftingGuid, BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInDependency(StoreAndCraftGuid, BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency(ExtraSlotsGuid, BepInDependency.DependencyFlags.HardDependency)]
     public sealed class DepositGuardPlugin : BaseUnityPlugin
     {
         public const string PluginGuid = "com.pics0ul.valheim.extraslotsdepositguard";
         public const string PluginName = "ExtraSlots Deposit Guard";
-        public const string PluginVersion = "1.0.1";
+        public const string PluginVersion = "1.1.0";
 
         internal const string NearbyCraftingGuid = "com.mikeg.valheim.nearbycrafting";
+        internal const string StoreAndCraftGuid = "com.morda.storeandcraft";
         internal const string ExtraSlotsGuid = "shudnal.ExtraSlots";
 
         internal static ManualLogSource ModLogger;
@@ -40,34 +43,25 @@ namespace ExtraSlotsDepositGuard
             ModLogger = Logger;
 
             Enabled = Config.Bind("General", "Enabled", true,
-                "Keep Nearby Crafting's quick-deposit hotkey from emptying Extra Slots slots.");
+                "Keep bulk-deposit features from emptying Extra Slots slots. Covers Nearby Crafting's quick-deposit hotkey and StoreAndCraft's dump and store-one actions.");
 
             ProtectQuickSlots = Config.Bind("Protected Slots", "QuickSlots", true,
-                "Never quick-deposit items sitting in Extra Slots quick slots.");
+                "Never deposit items sitting in Extra Slots quick slots.");
             ProtectMiscSlots = Config.Bind("Protected Slots", "MiscSlots", true,
-                "Never quick-deposit items sitting in Extra Slots misc slots (trophies, fish, coins, keys, quest items).");
+                "Never deposit items sitting in Extra Slots misc slots (trophies, fish, coins, keys, quest items).");
             ProtectAmmoSlots = Config.Bind("Protected Slots", "AmmoSlots", true,
-                "Never quick-deposit items sitting in Extra Slots ammo slots.");
+                "Never deposit items sitting in Extra Slots ammo slots.");
             ProtectFoodSlots = Config.Bind("Protected Slots", "FoodSlots", true,
-                "Never quick-deposit items sitting in Extra Slots food slots.");
+                "Never deposit items sitting in Extra Slots food slots.");
             ProtectEquipmentSlots = Config.Bind("Protected Slots", "EquipmentSlots", true,
-                "Never quick-deposit items sitting in Extra Slots equipment slots, including extra utility slots and custom slots added through the Extra Slots API.");
+                "Never deposit items sitting in Extra Slots equipment slots, including extra utility slots and custom slots added through the Extra Slots API.");
 
             DebugLogging = Config.Bind("Debug", "DebugLogging", false,
-                "Log every item this mod holds back from a quick-deposit.");
+                "Log every item this mod holds back from a deposit.");
 
             if (!ExtraSlotsApi.Resolve())
             {
-                Logger.LogError("Could not bind to the Extra Slots API. Quick-deposit protection is inactive.");
-                return;
-            }
-
-            MethodInfo massQuickDeposit = FindMassQuickDeposit();
-            if (massQuickDeposit == null)
-            {
-                Logger.LogError(
-                    "Could not find NearbyCrafting's MassQuickDeposit method. " +
-                    "Nearby Crafting has probably changed; quick-deposit protection is inactive.");
+                Logger.LogError("Could not bind to the Extra Slots API. Deposit protection is inactive.");
                 return;
             }
 
@@ -75,31 +69,28 @@ namespace ExtraSlotsDepositGuard
             {
                 _harmony = new Harmony(PluginGuid);
 
-                _harmony.Patch(
-                    massQuickDeposit,
-                    prefix: new HarmonyMethod(AccessTools.Method(typeof(MassQuickDepositScope), nameof(MassQuickDepositScope.Prefix))),
-                    finalizer: new HarmonyMethod(AccessTools.Method(typeof(MassQuickDepositScope), nameof(MassQuickDepositScope.Finalizer))));
+                var hosts = new List<string>();
+                if (TryPatchNearbyCrafting()) hosts.Add("Nearby Crafting");
+                if (TryPatchStoreAndCraft()) hosts.Add("StoreAndCraft");
 
-                // Run ahead of anything else hooking MoveItemToThis so a protected item is
-                // rejected before another mod does work on the strength of a move that is
-                // not going to happen.
-                var moveGuard = new HarmonyMethod(AccessTools.Method(typeof(MoveItemGuard), nameof(MoveItemGuard.Prefix)))
+                if (hosts.Count == 0)
                 {
-                    priority = Priority.First
-                };
+                    Logger.LogWarning(
+                        "Neither Nearby Crafting nor StoreAndCraft was found. " +
+                        "There is nothing to guard, so deposit protection is inactive.");
+                    try { _harmony.UnpatchSelf(); } catch { }
+                    _harmony = null;
+                    return;
+                }
 
-                _harmony.Patch(
-                    AccessTools.Method(typeof(Inventory), nameof(Inventory.MoveItemToThis),
-                        new[] { typeof(Inventory), typeof(ItemDrop.ItemData), typeof(int), typeof(int), typeof(int) }),
-                    prefix: moveGuard);
-
-                Logger.LogInfo(PluginName + " " + PluginVersion + " loaded; protecting Extra Slots slots from quick-deposit.");
+                Logger.LogInfo(PluginName + " " + PluginVersion +
+                    " loaded; protecting Extra Slots slots from: " + string.Join(", ", hosts.ToArray()) + ".");
             }
             catch (Exception ex)
             {
                 try { _harmony?.UnpatchSelf(); } catch { }
                 _harmony = null;
-                Logger.LogError("Failed to apply Harmony patches; quick-deposit protection is inactive.");
+                Logger.LogError("Failed to apply Harmony patches; deposit protection is inactive.");
                 Logger.LogError(ex);
             }
         }
@@ -108,17 +99,115 @@ namespace ExtraSlotsDepositGuard
         {
             try { _harmony?.UnpatchSelf(); } catch { }
             _harmony = null;
-            MassQuickDepositScope.Reset();
+            DepositScope.Reset();
         }
 
-        // NearbyCrafting.NearbyCraftingPlugin.MassQuickDeposit(Player) is private static.
-        private static MethodInfo FindMassQuickDeposit()
+        /// <summary>
+        /// Nearby Crafting has no per-item filter, so the deposit call is wrapped in a scope and the
+        /// individual moves are cancelled underneath it at Inventory.MoveItemToThis.
+        /// </summary>
+        private bool TryPatchNearbyCrafting()
         {
+            // Ask the chainloader first. AccessTools.TypeByName logs a warning when it comes up
+            // empty, and "this host simply isn't installed" is a normal case, not a problem.
+            if (!Chainloader.PluginInfos.ContainsKey(NearbyCraftingGuid))
+                return false;
+
+            // NearbyCrafting.NearbyCraftingPlugin.MassQuickDeposit(Player) is private static.
             Type pluginType = AccessTools.TypeByName("NearbyCrafting.NearbyCraftingPlugin");
             if (pluginType == null)
-                return null;
+            {
+                Logger.LogError(
+                    "Nearby Crafting is loaded but its plugin type was not found. " +
+                    "It has probably changed; quick-deposit protection is inactive.");
+                return false;
+            }
 
-            return AccessTools.Method(pluginType, "MassQuickDeposit", new[] { typeof(Player) });
+            MethodInfo massQuickDeposit = AccessTools.Method(pluginType, "MassQuickDeposit", new[] { typeof(Player) });
+            if (massQuickDeposit == null)
+            {
+                Logger.LogError(
+                    "Nearby Crafting is installed but its MassQuickDeposit method was not found. " +
+                    "It has probably changed; quick-deposit protection is inactive.");
+                return false;
+            }
+
+            _harmony.Patch(
+                massQuickDeposit,
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(DepositScope), nameof(DepositScope.Prefix))),
+                finalizer: new HarmonyMethod(AccessTools.Method(typeof(DepositScope), nameof(DepositScope.Finalizer))));
+
+            // Run ahead of anything else hooking MoveItemToThis so a protected item is
+            // rejected before another mod does work on the strength of a move that is
+            // not going to happen.
+            var moveGuard = new HarmonyMethod(AccessTools.Method(typeof(MoveItemGuard), nameof(MoveItemGuard.Prefix)))
+            {
+                priority = Priority.First
+            };
+
+            _harmony.Patch(
+                AccessTools.Method(typeof(Inventory), nameof(Inventory.MoveItemToThis),
+                    new[] { typeof(Inventory), typeof(ItemDrop.ItemData), typeof(int), typeof(int), typeof(int) }),
+                prefix: moveGuard);
+
+            return true;
+        }
+
+        /// <summary>
+        /// StoreAndCraft exposes its own per-item filter, so the bulk path only needs that filter
+        /// answered with "no". StoreOne is a separate single-item entry point that does not consult
+        /// the filter, so it gets its own guard.
+        /// </summary>
+        private bool TryPatchStoreAndCraft()
+        {
+            if (!Chainloader.PluginInfos.ContainsKey(StoreAndCraftGuid))
+                return false;
+
+            // StoreAndCraft.InventoryDump is an internal static class; AccessTools reaches it fine.
+            Type dumpType = AccessTools.TypeByName("StoreAndCraft.InventoryDump");
+            if (dumpType == null)
+            {
+                Logger.LogError(
+                    "StoreAndCraft is loaded but its InventoryDump type was not found. " +
+                    "It has probably changed; StoreAndCraft protection is inactive.");
+                return false;
+            }
+
+            MethodInfo dumpNearby = AccessTools.Method(dumpType, "DumpNearby", Type.EmptyTypes);
+            MethodInfo shouldDump = AccessTools.Method(dumpType, "ShouldDump",
+                new[] { typeof(ItemDrop.ItemData), typeof(Inventory) });
+            MethodInfo storeOne = AccessTools.Method(dumpType, "StoreOne",
+                new[] { typeof(ItemDrop.ItemData) });
+
+            if (dumpNearby == null || shouldDump == null || storeOne == null)
+            {
+                Logger.LogError(
+                    "StoreAndCraft is installed but its dump methods were not found " +
+                    "(DumpNearby: " + (dumpNearby != null) +
+                    ", ShouldDump: " + (shouldDump != null) +
+                    ", StoreOne: " + (storeOne != null) + "). " +
+                    "It has probably changed; StoreAndCraft protection is inactive.");
+                return false;
+            }
+
+            // Snapshot once for the whole bulk dump rather than per item.
+            _harmony.Patch(
+                dumpNearby,
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(DepositScope), nameof(DepositScope.PrefixLocalPlayer))),
+                finalizer: new HarmonyMethod(AccessTools.Method(typeof(DepositScope), nameof(DepositScope.Finalizer))));
+
+            _harmony.Patch(
+                shouldDump,
+                postfix: new HarmonyMethod(AccessTools.Method(typeof(ShouldDumpGuard), nameof(ShouldDumpGuard.Postfix))));
+
+            _harmony.Patch(
+                storeOne,
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(StoreOneGuard), nameof(StoreOneGuard.Prefix)))
+                {
+                    priority = Priority.First
+                });
+
+            return true;
         }
 
         internal static void Debug(string message)
@@ -214,10 +303,11 @@ namespace ExtraSlotsDepositGuard
     }
 
     /// <summary>
-    /// Opens a protection window for the duration of one Nearby Crafting mass quick-deposit and
-    /// snapshots the items that must stay where they are.
+    /// Opens a protection window for the duration of one bulk deposit and snapshots the items that
+    /// must stay where they are. Used by Nearby Crafting's MassQuickDeposit and StoreAndCraft's
+    /// DumpNearby alike.
     /// </summary>
-    internal static class MassQuickDepositScope
+    internal static class DepositScope
     {
         private static readonly HashSet<ItemDrop.ItemData> ProtectedItems =
             new HashSet<ItemDrop.ItemData>(ReferenceComparer.Instance);
@@ -233,6 +323,36 @@ namespace ExtraSlotsDepositGuard
                 && fromInventory != null
                 && ReferenceEquals(fromInventory, _guardedInventory)
                 && ProtectedItems.Contains(item);
+        }
+
+        /// <summary>
+        /// Single-item check for entry points that run outside a bulk scope. Falls back to a live
+        /// read of the Extra Slots API, which is fine for one item but would be wasteful in a loop.
+        /// </summary>
+        internal static bool IsProtectedSingle(ItemDrop.ItemData item)
+        {
+            if (item == null)
+                return false;
+
+            if (DepositGuardPlugin.Enabled == null || !DepositGuardPlugin.Enabled.Value)
+                return false;
+
+            if (_depth > 0)
+                return ProtectedItems.Contains(item);
+
+            var current = new HashSet<ItemDrop.ItemData>(ReferenceComparer.Instance);
+            try
+            {
+                ExtraSlotsApi.AddProtectedItems(current);
+            }
+            catch (Exception ex)
+            {
+                DepositGuardPlugin.ModLogger.LogWarning(
+                    "Could not read Extra Slots contents (" + ex.GetType().Name + "): " + ex.Message);
+                return false;
+            }
+
+            return current.Contains(item);
         }
 
         internal static void Prefix(Player player)
@@ -268,7 +388,13 @@ namespace ExtraSlotsDepositGuard
                 ProtectedItems.Clear();
             }
 
-            DepositGuardPlugin.Debug("Quick-deposit started; holding back " + ProtectedItems.Count + " item stack(s) in Extra Slots.");
+            DepositGuardPlugin.Debug("Deposit started; holding back " + ProtectedItems.Count + " item stack(s) in Extra Slots.");
+        }
+
+        /// <summary>Entry point for hosts whose deposit method takes no Player argument.</summary>
+        internal static void PrefixLocalPlayer()
+        {
+            Prefix(Player.m_localPlayer);
         }
 
         internal static Exception Finalizer(Exception __exception)
@@ -279,7 +405,7 @@ namespace ExtraSlotsDepositGuard
             if (_depth == 0)
             {
                 if (BlockedMoves > 0)
-                    DepositGuardPlugin.Debug("Quick-deposit finished; blocked " + BlockedMoves + " move(s) out of Extra Slots.");
+                    DepositGuardPlugin.Debug("Deposit finished; blocked " + BlockedMoves + " move(s) out of Extra Slots.");
 
                 ProtectedItems.Clear();
                 _guardedInventory = null;
@@ -295,6 +421,16 @@ namespace ExtraSlotsDepositGuard
             ProtectedItems.Clear();
             _guardedInventory = null;
             BlockedMoves = 0;
+        }
+
+        internal static void LogHeldBack(ItemDrop.ItemData item, string action)
+        {
+            if (!DepositGuardPlugin.DebugEnabled || item == null)
+                return;
+
+            string name = item.m_shared != null ? item.m_shared.m_name : "<unknown>";
+            DepositGuardPlugin.Debug(
+                "Held back '" + name + "' at slot " + item.m_gridPos.x + "," + item.m_gridPos.y + " during " + action + ".");
         }
 
         private sealed class ReferenceComparer : IEqualityComparer<ItemDrop.ItemData>
@@ -317,17 +453,50 @@ namespace ExtraSlotsDepositGuard
     {
         internal static bool Prefix(Inventory fromInventory, ItemDrop.ItemData item, ref bool __result)
         {
-            if (!MassQuickDepositScope.IsProtected(fromInventory, item))
+            if (!DepositScope.IsProtected(fromInventory, item))
                 return true;
 
-            MassQuickDepositScope.BlockedMoves++;
+            DepositScope.BlockedMoves++;
+            DepositScope.LogHeldBack(item, "quick-deposit");
 
-            if (DepositGuardPlugin.DebugEnabled)
-            {
-                string name = item.m_shared != null ? item.m_shared.m_name : "<unknown>";
-                DepositGuardPlugin.Debug(
-                    "Held back '" + name + "' at slot " + item.m_gridPos.x + "," + item.m_gridPos.y + " during quick-deposit.");
-            }
+            __result = false;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Answers StoreAndCraft's own per-item dump filter with "no" for anything sitting in a
+    /// protected Extra Slots slot. The item is simply skipped, exactly as a favourited item is.
+    /// </summary>
+    internal static class ShouldDumpGuard
+    {
+        internal static void Postfix(ItemDrop.ItemData item, Inventory inv, ref bool __result)
+        {
+            if (!__result)
+                return;
+
+            if (!DepositScope.IsProtected(inv, item))
+                return;
+
+            DepositScope.BlockedMoves++;
+            DepositScope.LogHeldBack(item, "dump");
+
+            __result = false;
+        }
+    }
+
+    /// <summary>
+    /// StoreAndCraft's single-item store (middle click) does not go through ShouldDump, so it is
+    /// guarded directly. There is no surrounding scope here, so the check reads Extra Slots live.
+    /// </summary>
+    internal static class StoreOneGuard
+    {
+        internal static bool Prefix(ItemDrop.ItemData item, ref bool __result)
+        {
+            if (!DepositScope.IsProtectedSingle(item))
+                return true;
+
+            DepositScope.LogHeldBack(item, "store-one");
 
             __result = false;
             return false;
